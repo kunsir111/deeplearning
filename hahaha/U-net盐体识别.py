@@ -7,18 +7,6 @@ from torch.utils.data import Dataset
 import copy
 import torch.nn as nn
 import torchvision
-import tqdm
-import torch.utils.data as Data
-from torch.utils.data.sampler import RandomSampler
-
-max_lr = 0.012
-min_lr = 0.001
-momentum = 0.9
-weight_decay = 1e-4
-batch_size = 18
-pad_left = 27
-pad_right = 27
-fine_size = 202
 
 save_weight = 'weight/'
 # os.path.isdir() 判断路径是否为目录
@@ -142,15 +130,14 @@ class SaltDataset(Dataset):
     def __getitem__(self, idx):
         # 深复制：即将被复制对象完全再复制一遍作为独立的新个体单独存在。所以改变原有被复
         # 制对象不会对已经复制出来的新对象产生影响。
-        image = copy.deepcopy(self.imageList[idx])
+        image = copy.deepcopy(self.imageList(idx))
         if self.mode == 'train':
             mask = copy.deepcopy(self.maskList[idx])
 
-
             # numpy.where调用方式为numpy.where(condition,1,2)
             # 满足条件的位置上返回结果1，不满足的位置上返回结果2
-            label = np.where(mask.sum() == 0, 1.0, 0.0).astype(np.float32)
 
+            label = np.where(mask.sum() == 0, 1.0, 0.0).astype(np.float32)
             if self.fine_size != image.shape[0]:
                 #
                 image, mask = do_resize2(image, mask, self.fine_size, self.fine_size)
@@ -160,11 +147,8 @@ class SaltDataset(Dataset):
                 image, mask = do_center_pad2(image, mask, self.pad_left, self.pad_right)
 
             image = image.reshape(1, image.shape[0], image.shape[1])
-
             mask = mask.reshape(1, mask.shape[0], mask.shape[1])
-            # print(image.shape)
-            # print(mask.shape)
-            # print(label.shape)
+
             return image, mask, label
 
         if self.mode == 'val':
@@ -204,9 +188,6 @@ class Decoder(nn.Module):
         x1 = self.conv_relu(x1)
         return x1
 
-# net = Decoder(100, 50, 1)
-# print(net.conv_relu[0])
-
 class Unet(nn.Module):
     def __init__(self, n_class):
         super().__init__()
@@ -221,144 +202,16 @@ class Unet(nn.Module):
         self.layer3 = self.base_layers[5]
         self.layer4 = self.base_layers[6]
         self.layer5 = self.base_layers[7]
-        self.decode4 = Decoder(512, 256 + 256, 256) #(512, 512, 256)
-        self.decode3 = Decoder(256, 256 + 128, 256) #(512, 384, 256)
-        self.decode2 = Decoder(256, 128 + 64, 128) #(256, 192, 128)
-        self.decode1 = Decoder(128, 64 + 64, 64)
+        self.decode4 = Decoder()
+        self.decode3 = Decoder()
+        self.decode2 = Decoder()
+        self.decode1 = Decoder()
         self.decode0 = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False)
+            nn.Upsample(),
+            nn.Conv2d(),
+            nn.Conv2d()
         )
-        self.conv_last = nn.Conv2d(64, n_class, 1)
+        self,conv_last = nn.Conv2d()
 
     def forward(self, input):
-        e1 = self.layer1(input)
-        e2 = self.layer2(e1)
-        e3 = self.layer3(e2)
-        e4 = self.layer4(e3)
-        f = self.layer5(e4)
-        d4 = self.decode4(f, e4)
-        d3 = self.decode3(d4, e3)
-        d2 = self.decode2(d3, e2)
-        d1 = self.decode1(d2, e1)
-        d0 = self.decode0(d1)
-        out = self.conv_last(d0)
-        return out
-
-# 获取图像的id
-all_id = train_df['id'].values
-pd.set_option('display.max_columns', None)
-# print(train_df)
-
-fold = []
-for i in range(5):
-    # pd.DataFrame.loc 讲解 https://www.jb51.net/article/183610.htm
-    # 将flod相同的id放到同一个列表中
-    fold.append(train_df.loc[train_df['fold'] == i, 'id'].values)
-
-salt = Unet(1)
-
-print(salt)
-
-def train(train_iter, model):
-    running_loss = 0.0
-    data_size = len(train_data)
-    model.train()
-    for inputs, masks, labels in train_iter:
-        optimizer.zero_grad()
-        with torch.set_grad_enabled(True):
-            y_hat = model(inputs)
-
-            # 对于二分类问题的三个训练样本，假设我们得到了模型的预测值pred=[3,2,1]，而真实标签对应的是[1,1,0]，如果要使用
-            # BCELoss，要求样本必须在0~1之间，也就是需要调用sigmoid。
-            # 而采用BECWithLogitsLoss时，相当于把BCELoss和sigmoid融合了，也就是说省略了sigmoid这个步骤。
-            loss = nn.BCEWithLogitsLoss()(y_hat.squeeze(1), masks.squeeze(1))
-            loss.backward()
-            optimizer.step()
-        running_loss += loss.item() * inputs.size(0)
-    epoch_loss = running_loss / data_size
-    return epoch_loss
-
-def test(test_iter, model):
-    running_loss = 0.0
-    data_size = len(test_iter)
-    predicts = []
-    truths = []
-    model.eval()
-
-    for inputs, masks in test_iter:
-        with torch.set_grad_enabled(False):
-            outputs = model(inputs)
-            outputs = outputs[:, :, pad_left:pad_left+fine_size, pad_left:pad_left + fine_size].contiguous()
-            loss = nn.BCEWithLogitsLoss()(outputs.squeeze(1), masks.squeeze(1))
-
-        predicts.append(torch.sigmoid(outputs).detach().numpy())
-        truths.append(masks.detach().numpy())
-        running_loss += loss.item() * inputs.size()
-
-    predicts = np.concatenate(predicts).squeeze()
-    truths = np.concatenate(truths).squeeze()
-    precision = (predicts == truths).float().sum()
-    precision = precision.mean()
-    epoch_loss = running_loss / data_size
-    return epoch_loss, precision
-
-
-def trainImageFetch(images_id):
-    image_train = np.zeros((images_id.shape[0], 101, 101), dtype=np.float32)
-    mask_train = np.zeros((images_id.shape[0], 101, 101), dtype=np.float32)
-    for idx, image_id in tqdm.tqdm(enumerate(images_id), total = images_id.shape[0]):
-        image_path = os.path.join(train_image_dir, image_id + '.png')
-        mask_path = os.path.join(train_mask_dir, image_id + '.png')
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255
-        image_train[idx] = image
-        mask_train[idx] = mask
-    return image_train, mask_train
-
-num_epochs = 300
-
-scheduler_step = num_epochs
-optimizer = torch.optim.SGD(salt.parameters(), lr = max_lr, momentum=momentum, weight_decay=weight_decay)
-lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, scheduler_step, min_lr)
-
-# np.setdiff1d(ar1, ar2, assume_unique=False)
-# 1.功能：找到2个数组中集合元素的差异。
-# 2.返回值：在ar1中但不在ar2中的已排序的唯一值。
-# 3.参数：
-#     ar1：array_like 输入数组。
-#     ar2：array_like 输入比较数组。
-#     assume_unique：bool。如果为True，则假定输入数组是唯一的，即可以加快计算速度。 默认值为False。
-train_id = np.setdiff1d(all_id, fold[0])
-# print(type(train_id))
-val_id = fold[0]
-
-
-X_train, y_train = trainImageFetch(train_id)
-X_val, y_val = trainImageFetch(val_id)
-
-train_data = SaltDataset(X_train, 'train', y_train, pad_left=27, pad_right=27)
-val_data = SaltDataset(X_val, 'val', y_val, pad_left=27, pad_right=27)
-
-train_iter = Data.DataLoader(train_data,
-                             shuffle=RandomSampler(train_data),
-                             batch_size=batch_size)
-val_iter = Data.DataLoader(val_data,
-                           shuffle=False,
-                           batch_size=batch_size)
-
-num_snapshot = 0
-best_acc = 0
-
-for epoch in range(num_epochs):
-    train_loss = train(train_iter, salt)
-    val_loss, accuracy = test(val_iter, salt)
-    lr_scheduler.step()
-
-    if accuracy > best_acc:
-        best_acc = accuracy
-        best_param = salt.state_dict()
-
-    print('epoch %d, train_loss %f, val_loss %f, val_accuracy %f' % (epoch + 1, train_loss, val_loss, accuracy))
-    #print('epoch %d, train_loss %f' % (epoch + 1, train_loss))
+        pass
